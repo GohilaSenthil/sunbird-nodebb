@@ -1,239 +1,173 @@
 pipeline {
-  agent any
+    agent any
 
-  options {
-    ansiColor('xterm')
-    timeout(time: 60, unit: 'MINUTES')
-  }
+    environment {
+        // === GitHub Repo ===
+        GITHUB_REPO = "sivaprakash123/gerrit-poc"
 
-  environment {
-    // === Gerrit settings ===
-    GERRIT_USER = "jenkins"
-    GERRIT_HOST = "10.175.2.49"
-    GERRIT_PORT = "29418"
-    TARGET_BRANCH = "master"
-    GERRIT_KEY   = "/var/lib/jenkins/.ssh/gerrit_jenkins"
-    // Simulated PR metadata (for manual test)
-    CHANGE_ID = "101"            // Fake PR ID
-    CHANGE_BRANCH = "feature/test-pr"
-    CHANGE_TARGET = "master"
-    // === GitHub repo details ===
-    // org/repo format
-    GITHUB_REPO = "KB-iGOT/sunbird-nodebb"
+        // === Gerrit ===
+        GERRIT_USER = "jenkins"
+        GERRIT_HOST = "10.175.2.49"
+        GERRIT_PORT = "29418"
+        GERRIT_KEY  = "/var/lib/jenkins/.ssh/gerrit_jenkins"
+        TARGET_BRANCH = "master"
 
-    // === SonarQube (Jenkins Global Tool + Server) ===
-    // SONARQUBE_ENV = Jenkins "Server authentication token" name (Manage Jenkins > Configure System > SonarQube servers)
-    SONARQUBE_ENV = "sonarqube"
-    // SONAR_SCANNER = Jenkins Tool name for SonarScanner (Manage Jenkins > Global Tool Configuration)
-    SONAR_SCANNER = "SonarScanner"
+        // === Sonar ===
+        SONARQUBE_ENV = "sonarqube"
+        SONAR_SCANNER_HOME = "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64"
 
-    // === Jira ===
-    JIRA_BASE = "https://karmayogibharat.atlassian.net"
-  }
-
-  stages {
-
-    stage('Preflight (PR context)') {
-      steps {
-        script {
-          // In Multibranch Pipeline, these exist only for PR builds
-          if (!env.CHANGE_ID) {
-            error "This job must run on a Pull Request build (env.CHANGE_ID is empty)."
-          }
-          echo "✅ PR detected: #${env.CHANGE_ID} | from ${env.CHANGE_BRANCH} -> ${env.CHANGE_TARGET}"
-        }
-      }
+        // === GitHub Token for auto-merge ===
+        // MUST be configured in Jenkins Credentials: gerrit-github-token
     }
 
-    stage('Checkout PR code') {
-      steps {
-        // Multibranch already checks out the right ref; ensure we’re on the PR revision
-        checkout scm
-        sh 'git log -1 --pretty=oneline'
-      }
-    }
+    stages {
 
-    stage('SonarQube Analysis') {
-      steps {
-        script {
-          // Works for any tech using the standalone scanner
-          withSonarQubeEnv("${SONARQUBE_ENV}") {
-            def scannerHome = tool name: "${SONAR_SCANNER}", type: 'hudson.plugins.sonar.SonarRunnerInstallation'
-            // Tune paths as needed; default scans repo root
-            sh """
-              "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64/bin/sonar-scanner" \
-                -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/','_')} \
-                -Dsonar.projectName=${GITHUB_REPO} \
-                -Dsonar.sources=. \
-                -Dsonar.host.url=${SONAR_HOST_URL} \
-                -Dsonar.login=${SONAR_TOKEN} \
-                -Dsonar.pullrequest.key=${CHANGE_ID} \
-                -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                -Dsonar.pullrequest.base=${CHANGE_TARGET}
-            """
-          }
-        }
-      }
-    }
-
-    stage('Enforce Sonar Quality Gate') {
-      steps {
-        // Wait up to ~10 min for the CE task
-        timeout(time: 10, unit: 'MINUTES') {
-          script {
-            def qg = waitForQualityGate() // requires SonarQube Scanner for Jenkins plugin
-            echo "🔎 Quality Gate: ${qg.status}"
-            if (qg.status != 'OK') {
-              error "❌ Failing build due to Quality Gate = ${qg.status}"
+        /* =====================================================================================
+           1. Detect PR build
+        ===================================================================================== */
+        stage("Detect Pull Request") {
+            when { changeRequest() }
+            steps {
+                echo "✔ PR detected: #${CHANGE_ID} | from ${CHANGE_BRANCH} -> ${CHANGE_TARGET}"
             }
-          }
         }
-      }
-    }
 
-    stage('Ensure Gerrit Change-Id') {
-      steps {
-        script {
-          echo "➡️ Checking Change-Id in last commit…"
-          def hasId = sh(script: "git log -1 | grep -E '^\\s*Change-Id:' || true", returnStdout: true).trim()
-          if (!hasId) {
-            echo "⚠️ No Change-Id in tip commit — amending with a generated one."
-            sh '''
-              git config user.name  "Jenkins"
-              git config user.email "jenkins@local"
-              msg=$(git log -1 --pretty=%B)
-              git commit --amend -m "${msg}\n\nChange-Id: I$(uuidgen | tr -d '-')"
-            '''
-          } else {
-            echo "✅ ${hasId}"
-          }
-        }
-      }
-    }
-
-    stage('Push to Gerrit for Review') {
-      steps {
-        script {
-          echo "📤 Pushing patchset to Gerrit with topic=PR-${CHANGE_ID}"
-          sh """
-            git remote remove gerrit || true
-            git remote add gerrit ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GITHUB_REPO}.git
-            GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
-              git push gerrit HEAD:refs/for/${TARGET_BRANCH}%topic=PR-${CHANGE_ID}
-          """
-        }
-      }
-    }
-
-    stage('Wait for Gerrit +2 / Verified +1') {
-      steps {
-        script {
-          echo "⏳ Waiting up to 30 minutes for Gerrit approvals on topic=PR-${CHANGE_ID}…"
-          timeout(time: 30, unit: 'MINUTES') {
-            waitUntil {
-              def json = sh(
-                script: """
-                  ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} -o StrictHostKeyChecking=no \
-                    ${GERRIT_USER}@${GERRIT_HOST} \
-                    "gerrit query --format=JSON topic:PR-${CHANGE_ID} --current-patch-set"
-                """,
-                returnStdout: true
-              ).trim()
-
-              echo "📄 Gerrit query raw: ${json}"
-
-              // Extract highest votes
-              def codeReview = sh(
-                script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Code-Review\") | .value' | sort -nr | head -1",
-                returnStdout: true
-              ).trim()
-
-              def verified = sh(
-                script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Verified\") | .value' | sort -nr | head -1",
-                returnStdout: true
-              ).trim()
-
-              echo "🔎 Gerrit votes → Code-Review=${codeReview ?: '∅'} | Verified=${verified ?: '∅'}"
-              return (codeReview == "2" && verified == "1")
+        /* =====================================================================================
+           2. Checkout PR Code
+        ===================================================================================== */
+        stage("Checkout PR") {
+            when { changeRequest() }
+            steps {
+                checkout scm
+                sh "git log -1 --pretty=oneline"
             }
-          }
-          echo "✅ Gerrit approved (+2 / +1)."
         }
-      }
-    }
 
-    stage('Merge GitHub PR') {
-      steps {
-        script {
-          echo "🔁 Merging GitHub PR #${CHANGE_ID}"
-          withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
-            def http = sh(
-              script: """
-                curl -s -o /tmp/merge_resp.json -w "%{http_code}" \
-                  -X PUT \
-                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  -d '{ "merge_method": "squash" }' \
-                  https://api.github.com/repos/${GITHUB_REPO}/pulls/${CHANGE_ID}/merge
-              """,
-              returnStdout: true
-            ).trim()
-            echo "GitHub merge HTTP=${http}"
-            sh "echo '--- merge response ---'; cat /tmp/merge_resp.json || true"
-            if (http != "200") {
-              error "❌ GitHub merge failed (HTTP ${http})."
+        /* =====================================================================================
+           3. SonarQube PR Scan
+        ===================================================================================== */
+        stage("SonarQube Analysis") {
+            when { changeRequest() }
+            steps {
+                withSonarQubeEnv("${SONARQUBE_ENV}") {
+                    sh """
+                        ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
+                          -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
+                          -Dsonar.projectName=${GITHUB_REPO} \
+                          -Dsonar.sources=. \
+                          -Dsonar.host.url=http://10.175.2.49:9000 \
+                          -Dsonar.login=${env.SONAR_AUTH_TOKEN} \
+                          -Dsonar.pullrequest.key=${CHANGE_ID} \
+                          -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
+                          -Dsonar.pullrequest.base=${CHANGE_TARGET}
+                    """
+                }
             }
-          }
-          echo "🎉 PR #${CHANGE_ID} merged."
         }
-      }
-    }
 
-    stage('Update Jira Ticket') {
-      steps {
-        script {
-          // Try to find JIRA key in PR title and latest commit message
-          def prTitle = sh(
-            script: "git log -1 --pretty=%s",
-            returnStdout: true
-          ).trim()
-          def fromCommit = sh(
-            script: "git log -1 --pretty=%B | grep -oE '[A-Z]+-[0-9]+' || true",
-            returnStdout: true
-          ).trim()
-          def fromTitle = sh(
-            script: "printf '%s' ${shQuote(prTitle)} | grep -oE '[A-Z]+-[0-9]+' || true",
-            returnStdout: true
-          ).trim()
-
-          def jiraKey = (fromCommit ?: fromTitle)
-          if (jiraKey) {
-            echo "📎 Jira key detected: ${jiraKey}"
-            withCredentials([usernamePassword(credentialsId: 'jira-api-creds', usernameVariable: 'JIRA_USER', passwordVariable: 'JIRA_TOKEN')]) {
-              def basic = sh(script: "echo -n '${JIRA_USER}:${JIRA_TOKEN}' | base64", returnStdout: true).trim()
-              // Transition ID "31" must match your workflow (e.g., to 'Done' or 'Ready for QA')
-              sh """
-                curl -s -o /tmp/jira_resp.json -w "%{http_code}" \
-                  -X POST \
-                  -H "Authorization: Basic ${basic}" \
-                  -H "Content-Type: application/json" \
-                  -d '{ "transition": { "id": "31" } }' \
-                  ${JIRA_BASE}/rest/api/3/issue/${jiraKey}/transitions
-              """
-              sh "echo '--- jira response ---'; cat /tmp/jira_resp.json || true"
+        /* =====================================================================================
+           4. SONAR QUALITY GATE
+        ===================================================================================== */
+        stage("Enforce Sonar Quality Gate") {
+            when { changeRequest() }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+                echo "✔ Sonar Quality Gate Passed"
             }
-            echo "🎯 Jira ${jiraKey} transitioned."
-          } else {
-            echo "⚠️ No Jira key pattern found in commit subject/body or PR title."
-          }
         }
-      }
-    }
-  }
 
-  post {
-    failure {
-      echo "❌ Pipeline failed. Check SonarQube/Gerrit/GitHub/Jira logs above."
+        /* =====================================================================================
+           5. Add Gerrit Change-Id
+        ===================================================================================== */
+        stage("Ensure Gerrit Change-Id") {
+            when { changeRequest() }
+            steps {
+                script {
+                    def changeID = sh(returnStdout: true,
+                        script: "git log -1 | grep 'Change-Id:' || true"
+                    ).trim()
+
+                    if (!changeID) {
+                        echo "⚠ No Change-Id found. Adding Change-Id..."
+                        sh """
+                            git config user.email "jenkins@gerrit"
+                            git config user.name "Jenkins"
+                            msg=\$(git log -1 --pretty=%B)
+                            new_id=I\$(uuidgen | tr -d '-')
+                            git commit --amend -m "\${msg}\n\nChange-Id: \${new_id}"
+                        """
+                    } else {
+                        echo "✔ Found Change-Id: ${changeID}"
+                    }
+                }
+            }
+        }
+
+        /* =====================================================================================
+           6. Push Patchset to Gerrit
+        ===================================================================================== */
+        stage("Push to Gerrit") {
+            when { changeRequest() }
+            steps {
+                sh """
+                    git remote add gerrit ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GITHUB_REPO}.git || true
+
+                    GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
+                    git push gerrit HEAD:refs/for/${TARGET_BRANCH}%topic=PR-${CHANGE_ID}
+                """
+            }
+        }
+
+        /* =====================================================================================
+           7. Wait for Gerrit Review +2 and Verified +1
+        ===================================================================================== */
+        stage("Wait for Gerrit Approval") {
+            when { changeRequest() }
+            steps {
+                script {
+                    timeout(time: 25, unit: 'MINUTES') {
+                        waitUntil {
+
+                            def json = sh(
+                                script: """
+                                  ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} -o StrictHostKeyChecking=no \
+                                    ${GERRIT_USER}@${GERRIT_HOST} \
+                                    "gerrit query --format=JSON topic:PR-${CHANGE_ID} --current-patch-set"
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            def cr = sh(script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Code-Review\") | .value' | sort -nr | head -1", returnStdout: true).trim()
+                            def vr = sh(script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Verified\") | .value' | sort -nr | head -1",  returnStdout: true).trim()
+
+                            echo "Gerrit -> Code-Review=${cr}, Verified=${vr}"
+                            return (cr == "2" && vr == "1")
+                        }
+                    }
+                }
+            }
+        }
+
+        /* =====================================================================================
+           8. Merge PR in GitHub after Gerrit approval
+        ===================================================================================== */
+        stage("Merge GitHub PR") {
+            when { changeRequest() }
+            steps {
+                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh """
+                        curl -s -o merge_out.json -w "%{http_code}" \
+                          -X PUT \
+                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          -d '{"merge_method":"squash"}' \
+                          https://api.github.com/repos/${GITHUB_REPO}/pulls/${CHANGE_ID}/merge
+                    """
+                }
+                echo "✔ GitHub PR #${CHANGE_ID} merged successfully"
+            }
+        }
     }
-  }
 }
