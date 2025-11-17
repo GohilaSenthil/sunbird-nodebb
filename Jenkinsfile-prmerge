@@ -64,8 +64,8 @@ pipeline {
 
                         sh """
                             ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} -o StrictHostKeyChecking=no \
-                              ${GERRIT_USER}@${GERRIT_HOST} \
-                              "gerrit create-project --owner ${GERRIT_USER} --empty-commit '${GERRIT_PROJECT}'"
+                            ${GERRIT_USER}@${GERRIT_HOST} \
+                            "gerrit create-project --owner Administrators --empty-commit '${GERRIT_PROJECT}'"
                         """
 
                         echo "✔ Gerrit project created: ${GERRIT_PROJECT}"
