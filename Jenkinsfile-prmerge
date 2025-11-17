@@ -54,31 +54,29 @@ pipeline {
             }
         }
 
-        // ======================================================
         stage("SonarQube Analysis") {
             when { changeRequest() }
             steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    withSonarQubeEnv("${SONARQUBE_ENV}") {
-                        sh """
-                          ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
-                            -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
-                            -Dsonar.projectName=${GITHUB_REPO} \
-                            -Dsonar.sources=. \
-                            -Dsonar.host.url=http://10.175.2.49:9000 \
-                            -Dsonar.token=${SONAR_TOKEN} \
-                            -Dsonar.branch.name=${CHANGE_BRANCH}
-                        """
-                    }
+                withSonarQubeEnv("${SONARQUBE_ENV}") {
+                    sh """
+                        ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
+                          -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
+                          -Dsonar.projectName=${GITHUB_REPO} \
+                          -Dsonar.sources=. \
+                          -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
+                          -Dsonar.login=${SONAR_AUTH_TOKEN}
+                    """
                 }
             }
         }
 
-        // ======================================================
+        /* =====================================================================================
+           4. SONAR QUALITY GATE
+        ===================================================================================== */
         stage("Enforce Sonar Quality Gate") {
             when { changeRequest() }
             steps {
-                timeout(time: 10, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
                 echo "✔ Sonar Quality Gate Passed"
