@@ -23,7 +23,7 @@ pipeline {
 
     // === SonarQube (Jenkins Global Tool + Server) ===
     // SONARQUBE_ENV = Jenkins "Server authentication token" name (Manage Jenkins > Configure System > SonarQube servers)
-    SONARQUBE_ENV = "sonarqube-server"
+    SONARQUBE_ENV = "sonarqube"
     // SONAR_SCANNER = Jenkins Tool name for SonarScanner (Manage Jenkins > Global Tool Configuration)
     SONAR_SCANNER = "SonarScanner"
 
