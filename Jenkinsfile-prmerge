@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         // === GitHub Repo ===
-        GITHUB_REPO = "sivaprakash123/gerrit-poc"
+        GITHUB_REPO = "KB-iGOT/sunbird-nodebb"
 
         // === Gerrit ===
         GERRIT_USER = "jenkins"
@@ -55,7 +55,7 @@ pipeline {
                           -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
                           -Dsonar.projectName=${GITHUB_REPO} \
                           -Dsonar.sources=. \
-                          -Dsonar.host.url=http://10.175.2.49:9000 \
+                          -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
                           -Dsonar.login=${env.SONAR_AUTH_TOKEN} \
                           -Dsonar.pullrequest.key=${CHANGE_ID} \
                           -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
