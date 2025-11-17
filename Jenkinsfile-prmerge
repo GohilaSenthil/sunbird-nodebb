@@ -19,7 +19,7 @@ pipeline {
     CHANGE_TARGET = "master"
     // === GitHub repo details ===
     // org/repo format
-    GITHUB_REPO = "sivaprakash123/python_gmail_smtp"
+    GITHUB_REPO = "KB-iGOT/sunbird-nodebb"
 
     // === SonarQube (Jenkins Global Tool + Server) ===
     // SONARQUBE_ENV = Jenkins "Server authentication token" name (Manage Jenkins > Configure System > SonarQube servers)
