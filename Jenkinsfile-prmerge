@@ -2,50 +2,38 @@ pipeline {
     agent any
 
     environment {
-        // ================================================
+
         // GitHub
-        // ================================================
         GITHUB_REPO       = "KB-iGOT/sunbird-nodebb"
         GITHUB_API        = "https://api.github.com/repos/${GITHUB_REPO}"
 
-        // ================================================
-        // Gerrit configuration
-        // ================================================
+        // Gerrit
         GERRIT_USER       = "jenkins"
         GERRIT_HOST       = "10.175.2.49"
         GERRIT_PORT       = "29418"
         GERRIT_KEY        = "/var/lib/jenkins/.ssh/gerrit_jenkins"
-        GERRIT_PROJECT    = "${GITHUB_REPO}"   // mapped directly
+        GERRIT_PROJECT    = "${GITHUB_REPO}"    // SAME name in Gerrit
         TARGET_BRANCH     = "${CHANGE_TARGET}"
 
-        // ================================================
         // SonarQube
-        // ================================================
         SONARQUBE_ENV      = "sonarqube"
         SONAR_SCANNER_HOME = "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64"
 
-        // ================================================
-        // Jira (Optional)
-        // ================================================
+        // Jira (optional)
         JIRA_BASE = "https://karmayogibharat.atlassian.net"
     }
 
     stages {
 
-        // ======================================================
+        // ----------------------------------------------------------
         stage("Detect Pull Request") {
             when { changeRequest() }
             steps {
-                echo """
-                🔍 **PR Detected**
-                Number: ${CHANGE_ID}
-                Branch: ${CHANGE_BRANCH}
-                Target: ${CHANGE_TARGET}
-                """.stripIndent()
+                echo "🔍 PR Detected → #${CHANGE_ID} (${CHANGE_BRANCH} → ${CHANGE_TARGET})"
             }
         }
 
-        // ======================================================
+        // ----------------------------------------------------------
         stage("Checkout PR Code") {
             when { changeRequest() }
             steps {
@@ -54,6 +42,7 @@ pipeline {
             }
         }
 
+        // ----------------------------------------------------------
         stage("SonarQube Analysis") {
             when { changeRequest() }
             steps {
@@ -64,15 +53,13 @@ pipeline {
                           -Dsonar.projectName=${GITHUB_REPO} \
                           -Dsonar.sources=. \
                           -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
-                          -Dsonar.login=${SONAR_AUTH_TOKEN}
+                          -Dsonar.token=${SONAR_AUTH_TOKEN}
                     """
                 }
             }
         }
 
-        /* =====================================================================================
-           4. SONAR QUALITY GATE
-        ===================================================================================== */
+        // ----------------------------------------------------------
         stage("Enforce Sonar Quality Gate") {
             when { changeRequest() }
             steps {
@@ -83,86 +70,24 @@ pipeline {
             }
         }
 
-        // ======================================================
-        stage("Ensure Gerrit Project Exists") {
-            when { changeRequest() }
-            steps {
-                script {
-                    def exists = sh(
-                        returnStatus: true,
-                        script: """
-                          ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} \
-                           -o StrictHostKeyChecking=no \
-                           ${GERRIT_USER}@${GERRIT_HOST} gerrit ls-projects \
-                           | grep -Fx '${GERRIT_PROJECT}'
-                        """
-                    ) == 0
-
-                    if (!exists) {
-                        echo "⚠ Gerrit project ${GERRIT_PROJECT} missing → Creating"
-                        sh """
-                          ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} \
-                           -o StrictHostKeyChecking=no \
-                           ${GERRIT_USER}@${GERRIT_HOST} \
-                           gerrit create-project --empty-commit '${GERRIT_PROJECT}'
-                        """
-                        echo "✔ Gerrit project created"
-                    } else {
-                        echo "✔ Gerrit project exists"
-                    }
-                }
-            }
-        }
-
-        // ======================================================
-        stage("Ensure Gerrit Branch Exists") {
-            when { changeRequest() }
-            steps {
-                script {
-                    def exists = sh(
-                        returnStatus: true,
-                        script: """
-                           ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} \
-                             -o StrictHostKeyChecking=no \
-                             ${GERRIT_USER}@${GERRIT_HOST} \
-                             gerrit ls-projects --branches ${GERRIT_PROJECT} \
-                             | grep -Fx '${TARGET_BRANCH}'
-                        """
-                    ) == 0
-
-                    if (!exists) {
-                        echo "⚠ Branch '${TARGET_BRANCH}' missing → Creating in Gerrit"
-                        sh """
-                          ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} \
-                            -o StrictHostKeyChecking=no \
-                            ${GERRIT_USER}@${GERRIT_HOST} \
-                            gerrit create-branch '${GERRIT_PROJECT}' '${TARGET_BRANCH}' master
-                        """
-                        echo "✔ Branch '${TARGET_BRANCH}' created in Gerrit"
-                    } else {
-                        echo "✔ Branch '${TARGET_BRANCH}' already exists"
-                    }
-                }
-            }
-        }
-
-        // ======================================================
+        // ----------------------------------------------------------
         stage("Ensure Gerrit Change-Id") {
             when { changeRequest() }
             steps {
                 script {
-                    def cid = sh(returnStdout: true,
+                    def cid = sh(
+                        returnStdout: true,
                         script: "git log -1 | grep 'Change-Id:' || true"
                     ).trim()
 
                     if (!cid) {
-                        echo "⚠ No Change-Id → Generating one"
+                        echo "⚠ No Change-Id → Adding one"
                         sh """
-                          git config user.email 'jenkins@gerrit'
-                          git config user.name 'Jenkins'
-                          msg=\$(git log -1 --pretty=%B)
-                          new_id=I\$(uuidgen | tr -d '-')
-                          git commit --amend -m "\${msg}\n\nChange-Id: \${new_id}"
+                            git config user.email 'jenkins@gerrit'
+                            git config user.name 'Jenkins'
+                            msg=\$(git log -1 --pretty=%B)
+                            new_id=I\$(uuidgen | tr -d '-')
+                            git commit --amend -m "\${msg}\n\nChange-Id: \${new_id}"
                         """
                     } else {
                         echo "✔ Change-Id exists"
@@ -171,20 +96,20 @@ pipeline {
             }
         }
 
-        // ======================================================
-        stage("Push to Gerrit for Review") {
+        // ----------------------------------------------------------
+        stage("Push to Gerrit (Create Review)") {
             when { changeRequest() }
             steps {
                 sh """
-                  git remote add gerrit ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GERRIT_PROJECT}.git || true
+                    git remote add gerrit ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GERRIT_PROJECT}.git || true
 
-                  GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
-                  git push gerrit HEAD:refs/for/${TARGET_BRANCH}%topic=PR-${CHANGE_ID}
+                    GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
+                    git push gerrit HEAD:refs/for/${TARGET_BRANCH}%topic=PR-${CHANGE_ID}
                 """
             }
         }
 
-        // ======================================================
+        // ----------------------------------------------------------
         stage("Wait for Gerrit Approval") {
             when { changeRequest() }
             steps {
@@ -204,7 +129,7 @@ pipeline {
                             def cr = sh(script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Code-Review\") | .value' | sort -rn | head -1", returnStdout: true).trim()
                             def vr = sh(script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Verified\") | .value' | sort -rn | head -1", returnStdout: true).trim()
 
-                            echo "Gerrit Approval → Code-Review=${cr}, Verified=${vr}"
+                            echo "Gerrit → Code-Review=${cr}, Verified=${vr}"
                             return (cr == "2" && vr == "1")
                         }
                     }
@@ -212,21 +137,21 @@ pipeline {
             }
         }
 
-        // ======================================================
+        // ----------------------------------------------------------
         stage("Merge GitHub PR") {
             when { changeRequest() }
             steps {
                 withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
                     sh """
-                      curl -s -o merge_out.json -w "%{http_code}" \
-                        -X PUT \
-                        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                        -H "Accept: application/vnd.github.v3+json" \
-                        -d '{"merge_method":"squash"}' \
-                        ${GITHUB_API}/pulls/${CHANGE_ID}/merge
+                        curl -s -o merge_out.json -w "%{http_code}" \
+                          -X PUT \
+                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          -d '{"merge_method":"squash"}' \
+                          ${GITHUB_API}/pulls/${CHANGE_ID}/merge
                     """
                 }
-                echo "✔ GitHub PR #${CHANGE_ID} merged"
+                echo "✔ GitHub PR #${CHANGE_ID} merged successfully"
             }
         }
     }
