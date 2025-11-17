@@ -9,3 +9,5 @@ triggering new PR with jenkinsfile update
 
 ##updated jenkins sonar token
 ## Fix sonar webhook
+### verify the gerrit changes
+### update gerrit amdin command
