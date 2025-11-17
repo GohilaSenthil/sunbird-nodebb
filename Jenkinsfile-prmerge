@@ -109,8 +109,10 @@ pipeline {
             when { changeRequest() }
             steps {
                 sh """
-                    git remote add gerrit ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GITHUB_REPO}.git || true
+                    git remote remove gerrit || true
 
+                    git remote add gerrit ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GERRIT_PROJECT}.git
+        
                     GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
                     git push gerrit HEAD:refs/for/${TARGET_BRANCH}%topic=PR-${CHANGE_ID}
                 """
