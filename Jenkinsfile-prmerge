@@ -56,10 +56,7 @@ pipeline {
                           -Dsonar.projectName=${GITHUB_REPO} \
                           -Dsonar.sources=. \
                           -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
-                          -Dsonar.login=${env.SONAR_AUTH_TOKEN} \
-                          -Dsonar.pullrequest.key=${CHANGE_ID} \
-                          -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                          -Dsonar.pullrequest.base=${CHANGE_TARGET}
+                          -Dsonar.login=${SONAR_AUTH_TOKEN}
                     """
                 }
             }
