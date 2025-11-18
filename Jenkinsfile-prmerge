@@ -67,6 +67,32 @@ pipeline {
                 echo "🎉 Merged PR #${CHANGE_ID} (auto-merge after Sonar OK)"
             }
         }
+	stage('Update Jira Status') {
+	    when {
+	        expression { return env.PR_MERGE_STATUS == "SUCCESS" }
+	    }
+	    environment {
+	        JIRA_URL = "https://karmayogibharat.atlassian.net"
+	        JIRA_ISSUE = "${env.JIRA_ISSUE_ID}"  // Issue ID from earlier stages
+	        JIRA_TRANSITION_ID = "21"  // Change this to your target status transition
+	    }
+	    steps {
+	        withCredentials([usernamePassword(credentialsId: 'JIRA_CREDS',
+                                 usernameVariable: 'JIRA_USER',
+                                 passwordVariable: 'JIRA_TOKEN')]) {
+	            script {
+	                sh """
+	                    curl -X POST \
+	                    -H "Content-Type: application/json" \
+	                    -u $JIRA_USER:$JIRA_TOKEN \
+	                    --data '{"transition": {"id": "${JIRA_TRANSITION_ID}"}}' \
+	                    $JIRA_URL/rest/api/3/issue/$JIRA_ISSUE/transitions
+	                """
+        	    }
+	        }
+	    }
+	}
+
     }
 }
 
