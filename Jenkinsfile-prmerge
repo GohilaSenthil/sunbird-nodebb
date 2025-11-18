@@ -26,6 +26,34 @@ pipeline {
             }
         }
 
+        /* ----------------------------------------------------------
+         * FETCH PR DETAILS FROM GITHUB (Fixes Missing DESCRIPTION)
+         * ----------------------------------------------------------
+         */
+        stage("Fetch PR Data") {
+            when { changeRequest() }
+            steps {
+                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh """
+                        curl -s \
+                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          ${GITHUB_API}/pulls/${CHANGE_ID} > pr_data.json
+                    """
+                }
+
+                script {
+                    def prJson = readJSON file: "pr_data.json"
+
+                    env.PR_TITLE = (prJson.title ?: "").trim()
+                    env.PR_BODY  = (prJson.body ?: "").trim()
+
+                    echo "📌 GitHub PR Title: ${env.PR_TITLE}"
+                    echo "📌 GitHub PR Description: ${env.PR_BODY}"
+                }
+            }
+        }
+
         stage("SonarQube Analysis") {
             when { changeRequest() }
             steps {
@@ -76,15 +104,19 @@ pipeline {
             }
         }
 
+        /* ----------------------------------------------------------
+         * DETECT JIRA SUBTASK (ONLY if PR begins with KB-1234)
+         * ----------------------------------------------------------
+         */
         stage('Detect Jira Subtask from PR') {
             when { changeRequest() }
             steps {
                 script {
-                    def prTitle = (env.CHANGE_TITLE ?: "").trim()
-                    def prBody  = (env.CHANGE_DESCRIPTION ?: "").trim()
+                    def prTitle = env.PR_TITLE
+                    def prBody  = env.PR_BODY
 
-                    echo "PR Title: ${prTitle}"
-                    echo "PR Body: ${prBody}"
+                    echo "🔎 Checking PR Title: ${prTitle}"
+                    echo "🔎 Checking PR Description: ${prBody}"
 
                     def pattern = ~/^(KB-\d+)/
                     def jiraId = null
@@ -106,11 +138,15 @@ pipeline {
             }
         }
 
+        /* ----------------------------------------------------------
+         * UPDATE JIRA STATUS
+         * ----------------------------------------------------------
+         */
         stage('Update Jira Subtask Status') {
             environment {
                 JIRA_URL = "https://karmayogibharat.atlassian.net"
                 JIRA_ISSUE = "${env.JIRA_ISSUE_ID}"
-                JIRA_TRANSITION_ID = "3"  // Change to your target Jira transition
+                JIRA_TRANSITION_ID = "3"  // UPDATE THIS ID AS NEEDED
             }
             when {
                 expression {
