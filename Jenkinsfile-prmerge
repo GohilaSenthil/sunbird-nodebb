@@ -55,85 +55,98 @@ pipeline {
             when { changeRequest() }
             steps {
                 withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
-                    sh """
-                        curl -s -o merge_out.json -w "%{http_code}" \
-                          -X PUT \
-                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                          -H "Accept: application/vnd.github.v3+json" \
-                          -d '{"merge_method":"squash"}' \
-                          ${GITHUB_API}/pulls/${CHANGE_ID}/merge
-                    """
+                    script {
+                        try {
+                            sh """
+                                curl -s -o merge_out.json -w "%{http_code}" \
+                                  -X PUT \
+                                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                                  -H "Accept: application/vnd.github.v3+json" \
+                                  -d '{"merge_method":"squash"}' \
+                                  ${GITHUB_API}/pulls/${CHANGE_ID}/merge
+                            """
+                            env.PR_MERGE_STATUS = "SUCCESS"
+                            echo "🎉 Merged PR #${CHANGE_ID} (auto-merge after Sonar OK)"
+                        } catch (err) {
+                            env.PR_MERGE_STATUS = "FAILED"
+                            error("❌ PR Merge Failed: ${err}")
+                        }
+                    }
                 }
-                echo "🎉 Merged PR #${CHANGE_ID} (auto-merge after Sonar OK)"
             }
         }
 
-	stage('Detect Jira Subtask from PR') {
-	    steps {
-	        script {
-	            def prTitle = (env.CHANGE_TITLE ?: "").trim()
-	            def prBody  = (env.CHANGE_DESCRIPTION ?: "").trim()
+        stage('Detect Jira Subtask from PR') {
+            when { changeRequest() }
+            steps {
+                script {
+                    def prTitle = (env.CHANGE_TITLE ?: "").trim()
+                    def prBody  = (env.CHANGE_DESCRIPTION ?: "").trim()
 
-	            echo "PR Title: ${prTitle}"
-	            echo "PR Body: ${prBody}"
+                    echo "PR Title: ${prTitle}"
+                    echo "PR Body: ${prBody}"
 
-	            // Pattern: Jira sub-task ID ONLY if it appears at the beginning
-	            def pattern = ~/^(KB-\d+)/
+                    def pattern = ~/^(KB-\d+)/
+                    def jiraId = null
 
-	            def jiraId = null
+                    if (prTitle ==~ pattern) {
+                        jiraId = (prTitle =~ pattern)[0][1]
+                    } else if (prBody ==~ pattern) {
+                        jiraId = (prBody =~ pattern)[0][1]
+                    }
 
-	            if (prTitle ==~ pattern) {
-	                jiraId = (prTitle =~ pattern)[0][1]
-	            } else if (prBody ==~ pattern) {
-	                jiraId = (prBody =~ pattern)[0][1]
-	            }
+                    if (jiraId) {
+                        env.JIRA_ISSUE_ID = jiraId
+                        echo "🧩 Detected Jira Subtask: ${env.JIRA_ISSUE_ID}"
+                    } else {
+                        env.JIRA_ISSUE_ID = ""
+                        echo "ℹ No Jira Subtask ID found at beginning → Jira step skipped"
+                    }
+                }
+            }
+        }
 
-	            if (jiraId) {
-	                env.JIRA_ISSUE_ID = jiraId
-	                echo "Detected Jira Subtask at beginning: ${env.JIRA_ISSUE_ID}"
-	            } else {
-	                echo "No Jira subtask detected at beginning → Skipping Jira update"
-	                env.JIRA_ISSUE_ID = ""
-        	    }
-	        }
-	    }
-	}
-
-
-	stage('Update Jira Subtask Status') {
-	    when {
-	        expression {
-	            return env.PR_MERGE_STATUS == "SUCCESS" &&
-	                   env.JIRA_ISSUE_ID?.trim()
-	        }
+        stage('Update Jira Subtask Status') {
             environment {
                 JIRA_URL = "https://karmayogibharat.atlassian.net"
-                JIRA_ISSUE = "${env.JIRA_ISSUE_ID}"  // Issue ID from earlier stages
-                JIRA_TRANSITION_ID = "3"  // Change this to your target status transition
+                JIRA_ISSUE = "${env.JIRA_ISSUE_ID}"
+                JIRA_TRANSITION_ID = "3"  // Change to your target Jira transition
             }
+            when {
+                expression {
+                    return env.PR_MERGE_STATUS == "SUCCESS" &&
+                           env.JIRA_ISSUE_ID?.trim()
+                }
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'JIRA_CREDS',
+                    usernameVariable: 'JIRA_USER',
+                    passwordVariable: 'JIRA_TOKEN'
+                )]) {
+                    script {
+                        echo "🔄 Updating Jira Subtask ${env.JIRA_ISSUE_ID} → Transition ${env.JIRA_TRANSITION_ID}"
 
-	    }
-	    steps {
-	        withCredentials([usernamePassword(
-	            credentialsId: 'JIRA_CREDS',
-	            usernameVariable: 'JIRA_USER',
-	            passwordVariable: 'JIRA_TOKEN'
-	        )]) {
-	            script {
-	                echo "Updating Jira Subtask ${env.JIRA_ISSUE_ID} → Transition ${env.JIRA_TRANSITION_ID}"
+                        sh """
+                            curl -X POST \
+                                -H "Content-Type: application/json" \
+                                -u $JIRA_USER:$JIRA_TOKEN \
+                                --data '{"transition": {"id": "${JIRA_TRANSITION_ID}"}}' \
+                                ${JIRA_URL}/rest/api/3/issue/${env.JIRA_ISSUE_ID}/transitions
+                        """
 
-        	        sh """
-                	    curl -X POST \
-	                    -H "Content-Type: application/json" \
-	                    -u $JIRA_USER:$JIRA_TOKEN \
-	                    --data '{"transition": {"id": "${JIRA_TRANSITION_ID}"}}' \
-	                    ${JIRA_URL}/rest/api/3/issue/${env.JIRA_ISSUE_ID}/transitions
-	                """
-	            }
-	        }
-	    }
-	}
+                        echo "✔ Jira Updated Successfully"
+                    }
+                }
+            }
+        }
 
+    } // end stages
+
+    post {
+        always {
+            echo "🏁 Pipeline Completed"
+        }
     }
 }
 

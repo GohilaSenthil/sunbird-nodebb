@@ -1,0 +1,139 @@
+pipeline {
+    agent any
+
+    environment {
+        GITHUB_REPO = "KB-iGOT/sunbird-nodebb"
+        GITHUB_API = "https://api.github.com/repos/${GITHUB_REPO}"
+
+        SONARQUBE_ENV = "sonarqube"
+        SONAR_SCANNER_HOME = "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64"
+    }
+
+    stages {
+
+        stage("Detect Pull Request") {
+            when { changeRequest() }
+            steps {
+                echo "🔍 PR Detected: #${CHANGE_ID} → ${CHANGE_BRANCH} → ${CHANGE_TARGET}"
+            }
+        }
+
+        stage("Checkout PR") {
+            when { changeRequest() }
+            steps {
+                checkout scm
+                sh "git log -1 --pretty=oneline"
+            }
+        }
+
+        stage("SonarQube Analysis") {
+            when { changeRequest() }
+            steps {
+                withSonarQubeEnv("${SONARQUBE_ENV}") {
+                    sh """
+                        ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
+                          -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
+                          -Dsonar.sources=. \
+                          -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
+                          -Dsonar.token=${SONAR_AUTH_TOKEN}
+                    """
+                }
+            }
+        }
+
+        stage("Enforce Quality Gate") {
+            when { changeRequest() }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+                echo "✔ Quality Gate Passed"
+            }
+        }
+
+        stage("Merge GitHub PR") {
+            when { changeRequest() }
+            steps {
+                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh """
+                        curl -s -o merge_out.json -w "%{http_code}" \
+                          -X PUT \
+                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          -d '{"merge_method":"squash"}' \
+                          ${GITHUB_API}/pulls/${CHANGE_ID}/merge
+                    """
+                }
+                echo "🎉 Merged PR #${CHANGE_ID} (auto-merge after Sonar OK)"
+            }
+        }
+
+	stage('Detect Jira Subtask from PR') {
+	    steps {
+	        script {
+	            def prTitle = (env.CHANGE_TITLE ?: "").trim()
+	            def prBody  = (env.CHANGE_DESCRIPTION ?: "").trim()
+
+	            echo "PR Title: ${prTitle}"
+	            echo "PR Body: ${prBody}"
+
+	            // Pattern: Jira sub-task ID ONLY if it appears at the beginning
+	            def pattern = ~/^(KB-\d+)/
+
+	            def jiraId = null
+
+	            if (prTitle ==~ pattern) {
+	                jiraId = (prTitle =~ pattern)[0][1]
+	            } else if (prBody ==~ pattern) {
+	                jiraId = (prBody =~ pattern)[0][1]
+	            }
+
+	            if (jiraId) {
+	                env.JIRA_ISSUE_ID = jiraId
+	                echo "Detected Jira Subtask at beginning: ${env.JIRA_ISSUE_ID}"
+	            } else {
+	                echo "No Jira subtask detected at beginning → Skipping Jira update"
+	                env.JIRA_ISSUE_ID = ""
+        	    }
+	        }
+	    }
+	}
+
+
+	stage('Update Jira Subtask Status') {
+	    when {
+	        expression {
+	            return env.PR_MERGE_STATUS == "SUCCESS" &&
+	                   env.JIRA_ISSUE_ID?.trim()
+	        }
+            environment {
+                JIRA_URL = "https://karmayogibharat.atlassian.net"
+                JIRA_ISSUE = "${env.JIRA_ISSUE_ID}"  // Issue ID from earlier stages
+                JIRA_TRANSITION_ID = "3"  // Change this to your target status transition
+            }
+
+	    }
+	    steps {
+	        withCredentials([usernamePassword(
+	            credentialsId: 'JIRA_CREDS',
+	            usernameVariable: 'JIRA_USER',
+	            passwordVariable: 'JIRA_TOKEN'
+	        )]) {
+	            script {
+	                echo "Updating Jira Subtask ${env.JIRA_ISSUE_ID} → Transition ${env.JIRA_TRANSITION_ID}"
+
+        	        sh """
+                	    curl -X POST \
+	                    -H "Content-Type: application/json" \
+	                    -u $JIRA_USER:$JIRA_TOKEN \
+	                    --data '{"transition": {"id": "${JIRA_TRANSITION_ID}"}}' \
+	                    ${JIRA_URL}/rest/api/3/issue/${env.JIRA_ISSUE_ID}/transitions
+	                """
+	            }
+	        }
+	    }
+	}
+
+    }
+}
+
