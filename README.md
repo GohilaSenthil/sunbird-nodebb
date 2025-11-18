@@ -13,3 +13,5 @@ triggering new PR with jenkinsfile update
 ### update gerrit admin command
 ### Check end to end pipeline
 ###updated pipline for sonar and gerrit fix
+## New pipeline
+##update gerrit approval block
