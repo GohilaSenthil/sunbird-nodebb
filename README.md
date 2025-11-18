@@ -17,3 +17,4 @@ triggering new PR with jenkinsfile update
 ##update gerrit approval block
 ### Check with another PR
 ### only sonar commit and merge automatically
+### Test PR merge and Jira update
