@@ -3,22 +3,18 @@ pipeline {
 
     environment {
         GITHUB_REPO = "KB-iGOT/sunbird-nodebb"
-        GITHUB_API  = "https://api.github.com/repos/${GITHUB_REPO}"
+        GITHUB_API = "https://api.github.com/repos/${GITHUB_REPO}"
 
-        // Gerrit REST API endpoint
-        GERRIT_API = "http://10.175.2.49:8080/a/changes"
-
-        // Sonar
         SONARQUBE_ENV = "sonarqube"
         SONAR_SCANNER_HOME = "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64"
     }
 
     stages {
 
-        stage("Detect PR") {
+        stage("Detect Pull Request") {
             when { changeRequest() }
             steps {
-                echo "PR detected #${CHANGE_ID} (${CHANGE_BRANCH} → ${CHANGE_TARGET})"
+                echo "🔍 PR Detected: #${CHANGE_ID} → ${CHANGE_BRANCH} → ${CHANGE_TARGET}"
             }
         }
 
@@ -26,6 +22,7 @@ pipeline {
             when { changeRequest() }
             steps {
                 checkout scm
+                sh "git log -1 --pretty=oneline"
             }
         }
 
@@ -36,7 +33,6 @@ pipeline {
                     sh """
                         ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
                           -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
-                          -Dsonar.projectName=${GITHUB_REPO} \
                           -Dsonar.sources=. \
                           -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
                           -Dsonar.token=${SONAR_AUTH_TOKEN}
@@ -45,57 +41,30 @@ pipeline {
             }
         }
 
-        stage("Quality Gate") {
+        stage("Enforce Quality Gate") {
             when { changeRequest() }
             steps {
-                script {
-                    qg = waitForQualityGate()
-                    echo "Quality Gate: ${qg.status}"
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
-            }
-        }
-
-        stage("Send Gerrit Score") {
-            when { changeRequest() }
-            steps {
-                script {
-                    // Convert GitHub PR to Gerrit Change-ID-like reference
-                    def gerritChange = "${GITHUB_REPO.replace('/', '~')}~${CHANGE_BRANCH}"
-
-                    def score = (qg.status == "OK") ? "2" : "-1"
-
-                    withCredentials([usernamePassword(credentialsId: 'gerrit-rest-creds',
-                        usernameVariable: 'GUSER', passwordVariable: 'GPASS')]) {
-
-                        sh """
-                           curl -X POST \
-                             -u ${GUSER}:${GPASS} \
-                             -H "Content-Type: application/json" \
-                             -d '{
-                                  "labels": {
-                                     "Code-Review": ${score},
-                                     "Verified": ${qg.status == "OK" ? "1" : "-1"}
-                                  }
-                                }' \
-                             ${GERRIT_API}/${gerritChange}/revisions/current/review
-                        """
-                    }
-                }
+                echo "✔ Quality Gate Passed"
             }
         }
 
         stage("Merge GitHub PR") {
             when { changeRequest() }
             steps {
-                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GTOKEN')]) {
+                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
                     sh """
-                      curl -X PUT \
-                        -H "Authorization: Bearer ${GTOKEN}" \
-                        -H "Accept: application/vnd.github.v3+json" \
-                        -d '{"merge_method":"squash"}' \
-                        ${GITHUB_API}/pulls/${CHANGE_ID}/merge
+                        curl -s -o merge_out.json -w "%{http_code}" \
+                          -X PUT \
+                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          -d '{"merge_method":"squash"}' \
+                          ${GITHUB_API}/pulls/${CHANGE_ID}/merge
                     """
                 }
+                echo "🎉 Merged PR #${CHANGE_ID} (auto-merge after Sonar OK)"
             }
         }
     }
