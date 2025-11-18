@@ -1,0 +1,198 @@
+pipeline {
+    agent any
+
+    environment {
+
+        // GitHub
+        GITHUB_REPO       = "KB-iGOT/sunbird-nodebb"
+        GITHUB_API        = "https://api.github.com/repos/${GITHUB_REPO}"
+
+        // Gerrit
+        GERRIT_USER       = "jenkins"
+        GERRIT_HOST       = "10.175.2.49"
+        GERRIT_PORT       = "29418"
+        GERRIT_KEY        = "/var/lib/jenkins/.ssh/gerrit_jenkins"
+        GERRIT_PROJECT    = "${GITHUB_REPO}"
+        TARGET_BRANCH     = "${CHANGE_TARGET}"
+
+        // SonarQube
+        SONARQUBE_ENV      = "sonarqube"
+        SONAR_SCANNER_HOME = "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64"
+
+        // Jira (optional)
+        JIRA_BASE = "https://karmayogibharat.atlassian.net"
+    }
+
+    stages {
+
+        /* ============================================================
+           Detect PR
+        ============================================================ */
+        stage("Detect Pull Request") {
+            when { changeRequest() }
+            steps {
+                echo "🔍 PR Detected → #${CHANGE_ID} (${CHANGE_BRANCH} → ${CHANGE_TARGET})"
+            }
+        }
+
+        /* ============================================================
+           Checkout PR
+        ============================================================ */
+        stage("Checkout PR Code") {
+            when { changeRequest() }
+            steps {
+                checkout scm
+                sh "git log -1 --pretty=oneline"
+            }
+        }
+
+        /* ============================================================
+           AUTO-SYNC GITHUB → GERRIT (Fix #3)
+        ============================================================ */
+        stage("Sync Target Branch into Gerrit") {
+            when { changeRequest() }
+            steps {
+                echo "🔄 Syncing GitHub target branch '${CHANGE_TARGET}' into Gerrit..."
+
+                sh """
+                    git remote add gerrit_ssh ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GERRIT_PROJECT}.git || true
+
+                    # Fetch GitHub master into a local temp branch
+                    git fetch origin ${CHANGE_TARGET}:${CHANGE_TARGET}
+
+                    # Force update Gerrit target branch so ancestry matches GitHub
+                    GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
+                    git push gerrit_ssh ${CHANGE_TARGET}:${CHANGE_TARGET} --force
+                """
+
+                echo "✔ Sync complete — Gerrit branch is now aligned with GitHub."
+            }
+        }
+
+        /* ============================================================
+           Sonar Analysis
+        ============================================================ */
+        stage("SonarQube Analysis") {
+            when { changeRequest() }
+            steps {
+                withSonarQubeEnv("${SONARQUBE_ENV}") {
+                    sh """
+                        ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
+                          -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
+                          -Dsonar.projectName=${GITHUB_REPO} \
+                          -Dsonar.sources=. \
+                          -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
+                          -Dsonar.token=${SONAR_AUTH_TOKEN}
+                    """
+                }
+            }
+        }
+
+        /* ============================================================
+           Sonar Quality Gate
+        ============================================================ */
+        stage("Enforce Sonar Quality Gate") {
+            when { changeRequest() }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+                echo "✔ Sonar Quality Gate Passed"
+            }
+        }
+
+        /* ============================================================
+           Ensure Gerrit Change-Id
+        ============================================================ */
+        stage("Ensure Gerrit Change-Id") {
+            when { changeRequest() }
+            steps {
+                script {
+                    def cid = sh(
+                        returnStdout: true,
+                        script: "git log -1 | grep 'Change-Id:' || true"
+                    ).trim()
+
+                    if (!cid) {
+                        echo "⚠ No Change-Id → Adding one"
+                        sh """
+                            git config user.email 'jenkins@gerrit'
+                            git config user.name 'Jenkins'
+                            msg=\$(git log -1 --pretty=%B)
+                            new_id=I\$(uuidgen | tr -d '-')
+                            git commit --amend -m "\${msg}\n\nChange-Id: \${new_id}"
+                        """
+                    } else {
+                        echo "✔ Change-Id exists"
+                    }
+                }
+            }
+        }
+
+        /* ============================================================
+           Push Patchset to Gerrit
+        ============================================================ */
+        stage("Push to Gerrit") {
+            when { changeRequest() }
+            steps {
+                sh """
+                    git remote add gerrit ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GERRIT_PROJECT}.git || true
+
+                    GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
+                    git push gerrit HEAD:refs/for/${TARGET_BRANCH}%topic=PR-${CHANGE_ID}
+                """
+            }
+        }
+
+        /* ============================================================
+           Wait for Gerrit Code-Review +2 / Verified +1
+        ============================================================ */
+        stage("Wait for Gerrit Approval") {
+            when { changeRequest() }
+            steps {
+                script {
+                    timeout(time: 20, unit: 'MINUTES') {
+                        waitUntil {
+                            def json = sh(
+                                returnStdout: true,
+                                script: """
+                                  ssh -p ${GERRIT_PORT} -i ${GERRIT_KEY} \
+                                    -o StrictHostKeyChecking=no \
+                                    ${GERRIT_USER}@${GERRIT_HOST} \
+                                    "gerrit query --format=JSON topic:PR-${CHANGE_ID} --current-patch-set"
+                                """
+                            ).trim()
+
+                            def cr = sh(script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Code-Review\") | .value' | sort -rn | head -1", returnStdout: true).trim()
+                            def vr = sh(script: "echo '${json}' | jq -r '.currentPatchSet.approvals[]? | select(.type==\"Verified\") | .value' | sort -rn | head -1", returnStdout: true).trim()
+
+                            echo "Gerrit → Code-Review=${cr}, Verified=${vr}"
+                            return (cr == "2" && vr == "1")
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ============================================================
+           Merge PR in GitHub
+        ============================================================ */
+        stage("Merge GitHub PR") {
+            when { changeRequest() }
+            steps {
+                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh """
+                        curl -s -o merge_out.json -w "%{http_code}" \
+                          -X PUT \
+                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          -d '{"merge_method":"squash"}' \
+                          ${GITHUB_API}/pulls/${CHANGE_ID}/merge
+                    """
+                }
+                echo "✔ GitHub PR #${CHANGE_ID} merged successfully"
+            }
+        }
+    }
+}
+
