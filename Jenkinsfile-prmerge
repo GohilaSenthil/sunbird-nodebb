@@ -35,10 +35,10 @@ pipeline {
                 withSonarQubeEnv("${SONARQUBE_ENV}") {
                     sh """
                         ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
-                          -Dsonar.projectKey=${GITHUB_REPO.replaceAll("/", "_")} \
+                          -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
                           -Dsonar.projectName=${GITHUB_REPO} \
                           -Dsonar.sources=. \
-                          -Dsonar.host.url=http://10.175.2.49:9000 \
+                          -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
                           -Dsonar.token=${SONAR_AUTH_TOKEN}
                     """
                 }
