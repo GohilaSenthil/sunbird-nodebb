@@ -12,7 +12,7 @@ pipeline {
         GERRIT_HOST       = "10.175.2.49"
         GERRIT_PORT       = "29418"
         GERRIT_KEY        = "/var/lib/jenkins/.ssh/gerrit_jenkins"
-        GERRIT_PROJECT    = "${GITHUB_REPO}"    // SAME name in Gerrit
+        GERRIT_PROJECT    = "${GITHUB_REPO}"
         TARGET_BRANCH     = "${CHANGE_TARGET}"
 
         // SonarQube
@@ -25,7 +25,9 @@ pipeline {
 
     stages {
 
-        // ----------------------------------------------------------
+        /* ============================================================
+           Detect PR
+        ============================================================ */
         stage("Detect Pull Request") {
             when { changeRequest() }
             steps {
@@ -33,7 +35,9 @@ pipeline {
             }
         }
 
-        // ----------------------------------------------------------
+        /* ============================================================
+           Checkout PR
+        ============================================================ */
         stage("Checkout PR Code") {
             when { changeRequest() }
             steps {
@@ -42,7 +46,32 @@ pipeline {
             }
         }
 
-        // ----------------------------------------------------------
+        /* ============================================================
+           AUTO-SYNC GITHUB → GERRIT (Fix #3)
+        ============================================================ */
+        stage("Sync Target Branch into Gerrit") {
+            when { changeRequest() }
+            steps {
+                echo "🔄 Syncing GitHub target branch '${CHANGE_TARGET}' into Gerrit..."
+
+                sh """
+                    git remote add gerrit_ssh ssh://${GERRIT_USER}@${GERRIT_HOST}:${GERRIT_PORT}/${GERRIT_PROJECT}.git || true
+
+                    # Fetch GitHub master into a local temp branch
+                    git fetch origin ${CHANGE_TARGET}:${CHANGE_TARGET}
+
+                    # Force update Gerrit target branch so ancestry matches GitHub
+                    GIT_SSH_COMMAND="ssh -i ${GERRIT_KEY} -o StrictHostKeyChecking=no" \
+                    git push gerrit_ssh ${CHANGE_TARGET}:${CHANGE_TARGET} --force
+                """
+
+                echo "✔ Sync complete — Gerrit branch is now aligned with GitHub."
+            }
+        }
+
+        /* ============================================================
+           Sonar Analysis
+        ============================================================ */
         stage("SonarQube Analysis") {
             when { changeRequest() }
             steps {
@@ -59,7 +88,9 @@ pipeline {
             }
         }
 
-        // ----------------------------------------------------------
+        /* ============================================================
+           Sonar Quality Gate
+        ============================================================ */
         stage("Enforce Sonar Quality Gate") {
             when { changeRequest() }
             steps {
@@ -70,7 +101,9 @@ pipeline {
             }
         }
 
-        // ----------------------------------------------------------
+        /* ============================================================
+           Ensure Gerrit Change-Id
+        ============================================================ */
         stage("Ensure Gerrit Change-Id") {
             when { changeRequest() }
             steps {
@@ -96,8 +129,10 @@ pipeline {
             }
         }
 
-        // ----------------------------------------------------------
-        stage("Push to Gerrit (Create Review)") {
+        /* ============================================================
+           Push Patchset to Gerrit
+        ============================================================ */
+        stage("Push to Gerrit") {
             when { changeRequest() }
             steps {
                 sh """
@@ -109,7 +144,9 @@ pipeline {
             }
         }
 
-        // ----------------------------------------------------------
+        /* ============================================================
+           Wait for Gerrit Code-Review +2 / Verified +1
+        ============================================================ */
         stage("Wait for Gerrit Approval") {
             when { changeRequest() }
             steps {
@@ -137,7 +174,9 @@ pipeline {
             }
         }
 
-        // ----------------------------------------------------------
+        /* ============================================================
+           Merge PR in GitHub
+        ============================================================ */
         stage("Merge GitHub PR") {
             when { changeRequest() }
             steps {
