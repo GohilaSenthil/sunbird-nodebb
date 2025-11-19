@@ -25,3 +25,4 @@ final Jira Task ID test
 ## revert changes
 ## Jira subtask check
 ### trim jira ID
+### Verify Task ID
