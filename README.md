@@ -24,3 +24,5 @@ final Jira Task ID test
 ### failing in sonar analysis. fix that
 ## revert changes
 ## Jira subtask check
+### trim jira ID
+### Verify Task ID
