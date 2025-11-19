@@ -112,6 +112,12 @@ pipeline {
             when { changeRequest() }
             steps {
                 script {
+
+	            def clean = { s ->
+	                return (s ?: "")
+	                    .replaceAll("[^\\x20-\\x7E]", "")  // remove invisible unicode
+	                    .trim()
+	            }
                     def prTitle = env.PR_TITLE
                     def prBody  = env.PR_BODY
 
