@@ -22,3 +22,4 @@ final Jira Task ID test
 ## updated pipeline to detect Title in PR
 ### Testing PR Jira
 ### failing in sonar analysis. fix that
+## revert changes
