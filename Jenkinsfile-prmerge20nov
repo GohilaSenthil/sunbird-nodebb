@@ -2,11 +2,11 @@ pipeline {
     agent any
 
     environment {
-        GITHUB_REPO  = "KB-iGOT/sunbird-nodebb"
-        GITHUB_API   = "https://api.github.com/repos/${GITHUB_REPO}"
+        GITHUB_REPO = "KB-iGOT/sunbird-nodebb"
+        GITHUB_API  = "https://api.github.com/repos/${GITHUB_REPO}"
 
-        SONARQUBE_ENV       = "sonarqube"
-        SONAR_SCANNER_HOME  = "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64"
+        SONARQUBE_ENV = "sonarqube"
+        SONAR_SCANNER_HOME = "/var/lib/jenkins/sonar-scanner-7.3.0.5189-linux-x64"
     }
 
     stages {
@@ -42,9 +42,7 @@ pipeline {
                 }
 
                 script {
-                    def jsonText = readFile('pr_data.json')
-                    def slurper  = new groovy.json.JsonSlurper()
-                    def prJson   = slurper.parseText(jsonText)
+                    def prJson = readJSON file: "pr_data.json"
 
                     env.PR_TITLE = (prJson.title ?: "").trim()
                     env.PR_BODY  = (prJson.body ?: "").trim()
@@ -113,18 +111,18 @@ pipeline {
             steps {
                 script {
 
-                    // Clean invisible unicode (zero-width spaces etc)
+                    // Clean any hidden unicode/Jira paste artifacts
                     def clean = { s ->
                         return (s ?: "")
-                            .replaceAll("[^\\x20-\\x7E]", "")
+                            .replaceAll("[^\\x20-\\x7E]", "")  // remove zero-width etc
                             .trim()
                     }
 
                     def prTitle = clean(env.PR_TITLE)
                     def prBody  = clean(env.PR_BODY)
 
-                    echo "🔎 Clean PR Title: '${prTitle}'"
-                    echo "🔎 Clean PR Body : '${prBody}'"
+                    echo "🔎 Cleaned PR Title: '${prTitle}'"
+                    echo "🔎 Cleaned PR Body : '${prBody}'"
 
                     def pattern = ~/^(KB-\d+)/
                     def jiraId = null
@@ -140,7 +138,7 @@ pipeline {
                         echo "🧩 Jira Subtask Detected: ${env.JIRA_ISSUE_ID}"
                     } else {
                         env.JIRA_ISSUE_ID = ""
-                        echo "ℹ No Jira Subtask ID found → Skip Jira"
+                        echo "ℹ No KB-* Subtask ID found at beginning → Skipping Jira update"
                     }
                 }
             }
@@ -151,9 +149,9 @@ pipeline {
          * ---------------------------------------------------------- */
         stage('Update Jira Subtask Status') {
             environment {
-                JIRA_URL          = "https://karmayogibharat.atlassian.net"
-                JIRA_ISSUE        = "${env.JIRA_ISSUE_ID}"
-                JIRA_TRANSITION_ID = "91"   // ✔ DONE transition ID
+                JIRA_URL = "https://karmayogibharat.atlassian.net"
+                JIRA_ISSUE = "${env.JIRA_ISSUE_ID}"
+                JIRA_TRANSITION_ID = "91"  // CHANGE THIS
             }
             when {
                 expression {
@@ -168,23 +166,23 @@ pipeline {
                     passwordVariable: 'JIRA_TOKEN'
                 )]) {
                     script {
-                        echo "🔄 Updating Jira ${env.JIRA_ISSUE_ID} → DONE (Transition 91)"
+                        echo "🔄 Updating Jira ${env.JIRA_ISSUE_ID} → Transition ${env.JIRA_TRANSITION_ID}"
 
                         sh """
                             curl -v -X POST \
                                 -H "Content-Type: application/json" \
                                 -u $JIRA_USER:$JIRA_TOKEN \
-                                --data '{"transition":{"id":"${JIRA_TRANSITION_ID}"}}' \
+                                --data '{"transition": {"id": "${JIRA_TRANSITION_ID}"}}' \
                                 ${JIRA_URL}/rest/api/3/issue/${env.JIRA_ISSUE_ID}/transitions
                         """
 
-                        echo "✔ Jira Updated to DONE"
+                        echo "✔ Jira Status Updated"
                     }
                 }
             }
         }
 
-    } // end stages
+    } // stages end
 
     post {
         always {
