@@ -33,6 +33,7 @@ final Jira Task ID test
 ### trim task id properly
 ### update task format
 ### Verify Task ID
+### pipeline updated
 ### update in finding task id
 ### update transition id
 ### test task ID with :
