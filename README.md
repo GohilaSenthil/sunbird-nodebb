@@ -31,6 +31,7 @@ final Jira Task ID test
 ### update task id and check
 ### trim jira ID
 ### trim task id properly
+### update task format
 ### Verify Task ID
 ### update in finding task id
 ### update transition id
