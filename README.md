@@ -30,6 +30,7 @@ final Jira Task ID test
 ## Jira subtask check
 ### update task id and check
 ### trim jira ID
+### trim task id properly
 ### Verify Task ID
 ### update transition id
 
