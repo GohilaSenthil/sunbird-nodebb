@@ -113,13 +113,12 @@ pipeline {
             steps {
                 script {
 
-                    // Strong clean: removes zero-width, NBSP, BOM, multiple spaces
                     def clean = { s ->
                         return (s ?: "")
-                            .replaceAll("[\\u200B-\\u200D\\uFEFF]", "")  // ZWSP & BOM
-                            .replaceAll("\\u00A0", " ")                 // NBSP → space
-                            .replaceAll("\\s+", " ")                    // collapse whitespace
-                            .replaceAll("^\\s+", "")                    // remove leading spaces
+                            .replaceAll("[\\u200B-\\u200D\\uFEFF]", "")
+                            .replaceAll("\\u00A0", " ")
+                            .replaceAll("\\s+", " ")
+                            .replaceAll("^\\s+", "")
                             .trim()
                     }
 
@@ -132,9 +131,9 @@ pipeline {
                     def pattern = ~/^(KB-\d+)/
                     def jiraId = null
 
-                    if (prTitle ==~ pattern) {
+                    if ((prTitle =~ pattern).find()) {
                         jiraId = (prTitle =~ pattern)[0][1]
-                    } else if (prBody ==~ pattern) {
+                    } else if ((prBody =~ pattern).find()) {
                         jiraId = (prBody =~ pattern)[0][1]
                     }
 
