@@ -151,7 +151,7 @@ pipeline {
             environment {
                 JIRA_URL = "https://karmayogibharat.atlassian.net"
                 JIRA_ISSUE = "${env.JIRA_ISSUE_ID}"
-                JIRA_TRANSITION_ID = "3"  // CHANGE THIS
+                JIRA_TRANSITION_ID = "91"  // CHANGE THIS
             }
             when {
                 expression {
