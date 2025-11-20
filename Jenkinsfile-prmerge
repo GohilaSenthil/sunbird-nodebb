@@ -27,7 +27,7 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-         * FETCH PR DETAILS FROM GITHUB (title + description)
+         * FETCH PR TITLE + BODY FROM GITHUB (NO readJSON)
          * ---------------------------------------------------------- */
         stage("Fetch PR Data") {
             when { changeRequest() }
@@ -47,10 +47,10 @@ pipeline {
                     def prJson   = slurper.parseText(jsonText)
 
                     env.PR_TITLE = (prJson.title ?: "").trim()
-                    env.PR_BODY  = (prJson.body ?: "").trim()
+                    env.PR_BODY  = (prJson.body  ?: "").trim()
 
-                    echo "📌 GitHub PR Title:       '${env.PR_TITLE}'"
-                    echo "📌 GitHub PR Description: '${env.PR_BODY}'"
+                    echo "📌 GitHub PR Title: '${env.PR_TITLE}'"
+                    echo "📌 GitHub PR Body : '${env.PR_BODY}'"
                 }
             }
         }
@@ -106,17 +106,20 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-         * DETECT JIRA SUBTASK (KB-XXXXX) FROM CLEANED PR DATA
+         * DETECT KB-XXXXX SUBTASK FROM CLEANED PR DATA
          * ---------------------------------------------------------- */
         stage('Detect Jira Subtask from PR') {
             when { changeRequest() }
             steps {
                 script {
 
-                    // Clean invisible unicode (zero-width spaces etc)
+                    // Strong clean: removes zero-width, NBSP, BOM, multiple spaces
                     def clean = { s ->
                         return (s ?: "")
-                            .replaceAll("[^\\x20-\\x7E]", "")
+                            .replaceAll("[\\u200B-\\u200D\\uFEFF]", "")  // ZWSP & BOM
+                            .replaceAll("\\u00A0", " ")                 // NBSP → space
+                            .replaceAll("\\s+", " ")                    // collapse whitespace
+                            .replaceAll("^\\s+", "")                    // remove leading spaces
                             .trim()
                     }
 
@@ -147,13 +150,13 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-         * UPDATE JIRA STATUS VIA REST API
+         * UPDATE JIRA SUBTASK STATUS → DONE (Transition ID 91)
          * ---------------------------------------------------------- */
         stage('Update Jira Subtask Status') {
             environment {
-                JIRA_URL          = "https://karmayogibharat.atlassian.net"
-                JIRA_ISSUE        = "${env.JIRA_ISSUE_ID}"
-                JIRA_TRANSITION_ID = "91"   // ✔ DONE transition ID
+                JIRA_URL           = "https://karmayogibharat.atlassian.net"
+                JIRA_ISSUE         = "${env.JIRA_ISSUE_ID}"
+                JIRA_TRANSITION_ID = "91"   // ✔ "Sub-task completed" → Done
             }
             when {
                 expression {
@@ -168,7 +171,7 @@ pipeline {
                     passwordVariable: 'JIRA_TOKEN'
                 )]) {
                     script {
-                        echo "🔄 Updating Jira ${env.JIRA_ISSUE_ID} → DONE (Transition 91)"
+                        echo "🔄 Updating Jira ${env.JIRA_ISSUE_ID} → DONE (ID 91)"
 
                         sh """
                             curl -v -X POST \
