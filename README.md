@@ -37,4 +37,5 @@ final Jira Task ID test
 ### update in finding task id
 ### update transition id
 ### test task ID with :
+### Updated JIRA CREDS in jenkins. hopefully should work now
 
