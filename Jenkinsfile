@@ -100,7 +100,8 @@ if (params.enable_owasp_scan) {
             if (params.enable_docker_scan) {
                 stage('Docker Scan') {
                     script {
-                        def imageFullName = "${hub_org}/${JOB_BASE_NAME}:${build_tag}_${params.nodebb_branch}"
+                        def jobBaseLower = JOB_BASE_NAME.toLowerCase()
+                        def imageFullName = "${hub_org}/${jobBaseLower}:${build_tag}_${params.nodebb_branch}"
                         echo "🔍 Starting Trivy scan for image: ${imageFullName}"
 
                         sh """
