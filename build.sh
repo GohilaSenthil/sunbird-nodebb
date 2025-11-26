@@ -4,7 +4,7 @@
 # Build script
 set -eo pipefail
 build_tag=$1
-name=nodebb
+name=Nodebb
 node=$2
 org=$3
 
