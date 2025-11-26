@@ -23,6 +23,69 @@ node('build-slave') {
                 echo "build_tag: " + build_tag
             }
 
+if (params.enable_owasp_scan) {
+    stage('Dependency Check (Pre-Build)') {
+        script {
+            def projectName = "${env.JOB_BASE_NAME}"
+            def reportDir = "/var/lib/jenkins/owasp-report"
+            def reportFile = "${reportDir}/${projectName}-owasp-report.html"
+            def workspaceReportDir = "${env.WORKSPACE}/owasp-report"
+            def workspaceReportFile = "${workspaceReportDir}/${projectName}-owasp-report.html"
+
+            echo "🔍 Starting OWASP Dependency-Check for project: ${projectName}"
+            echo "📁 Shared report path: ${reportFile}"
+            echo "📁 Workspace report path: ${workspaceReportFile}"
+
+            withEnv(["JAVA_HOME=${JAVA17_HOME}", "PATH=${JAVA17_HOME}/bin:${env.PATH}"]) {
+                sh """
+                    set -e
+                    echo "✅ Java version in use:"
+                    java -version
+
+                    echo "🧭 Ensure shared report directory exists and is writable:"
+                    mkdir -p ${reportDir}
+                    ls -ld ${reportDir} || true
+
+                    echo "🚀 Running OWASP Dependency-Check (writing to ${reportDir})..."
+                    # run from workspace so --scan . is correct
+                    cd "${env.WORKSPACE}"
+                    time /var/lib/jenkins/dependency-check/bin/dependency-check.sh \
+                        --project "${projectName}" \
+                        --scan . \
+                        --out ${reportDir} \
+                        --format "HTML" \
+                        --disableNodeAudit --disableRetireJS --disableAssembly
+
+                    echo "📄 Attempt to move/rename generated report to job-specific name (if default created):"
+                    # Default name dependency-check-report.html may be created in reportDir
+                    if [ -f "${reportDir}/dependency-check-report.html" ]; then
+                        mv -f "${reportDir}/dependency-check-report.html" "${reportFile}"
+                    fi
+
+                    echo "🔎 Verify report file exists and show details:"
+                    if [ -f "${reportFile}" ]; then
+                        ls -l "${reportFile}"
+                    else
+                        echo "!!! Report file NOT found at ${reportFile} !!!"
+                        echo "Listing ${reportDir} contents for debugging:"
+                        ls -la "${reportDir}" || true
+                        # Fail here so pipeline shows clear error (optional). Comment next line if you prefer to continue.
+                        exit 1
+                    fi
+
+                    echo "📋 Copying report into workspace for archiving..."
+                    mkdir -p "${workspaceReportDir}"
+                    cp -f "${reportFile}" "${workspaceReportFile}"
+                    ls -l "${workspaceReportFile}"
+                """
+            }
+
+            // Archive only this job's specific HTML report (workspace-relative)
+            archiveArtifacts artifacts: "owasp-report/${projectName}-owasp-report.html", fingerprint: true
+        }
+    }
+}                       
+
             stage('Build') {
                 env.NODE_ENV = "build"
                 sh("git clone https://github.com/NodeBB/NodeBB.git -b ${params.nodebb_branch}")
@@ -32,6 +95,36 @@ node('build-slave') {
                 sh('chmod 777 NodeBB/build.sh')
                 sh("bash ./NodeBB/build.sh ${build_tag}_${params.nodebb_branch} ${env.NODE_NAME} ${hub_org}")
             }
+
+            // 🧩 New Stage: Docker Vulnerability Scan
+            if (params.enable_docker_scan) {
+                stage('Docker Scan') {
+                    script {
+                        def imageFullName = "${hub_org}/${JOB_BASE_NAME}:${build_tag}"
+                        echo "🔍 Starting Trivy scan for image: ${imageFullName}"
+
+                        sh """
+                            mkdir -p trivy-reports
+
+                            # Full Trivy scan in JSON format
+                            trivy image --quiet --format json --output trivy-reports/trivy-report.json ${imageFullName}
+
+                            # Extract by severity
+                            jq '.Results[].Vulnerabilities[] | select(.Severity=="CRITICAL")' trivy-reports/trivy-report.json > trivy-reports/critical.json || true
+                            jq '.Results[].Vulnerabilities[] | select(.Severity=="HIGH")' trivy-reports/trivy-report.json > trivy-reports/high.json || true
+                            jq '.Results[].Vulnerabilities[] | select(.Severity=="MEDIUM")' trivy-reports/trivy-report.json > trivy-reports/medium.json || true
+
+                            echo "================== TRIVY VULNERABILITY SUMMARY =================="
+                            jq -r '.Results[].Vulnerabilities[].Severity' trivy-reports/trivy-report.json | sort | uniq -c | awk '{print \$2": "\$1}'
+                            echo "================================================================="
+                        """
+
+                        // Archive the scan reports
+                        archiveArtifacts artifacts: 'trivy-reports/*.json', fingerprint: true
+                    }
+                }
+            }
+
             stage('ArchiveArtifacts') {
                 archiveArtifacts "metadata.json"
                 currentBuild.description = "${build_tag}"
