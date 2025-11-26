@@ -113,6 +113,7 @@ pipeline {
             steps {
                 script {
 
+                    // strong clean
                     def clean = { s ->
                         return (s ?: "")
                             .replaceAll("[\\u200B-\\u200D\\uFEFF]", "")
@@ -128,13 +129,23 @@ pipeline {
                     echo "🔎 Clean PR Title: '${prTitle}'"
                     echo "🔎 Clean PR Body : '${prBody}'"
 
+                    // pattern: KB-12345 at beginning
                     def pattern = ~/^(KB-\d+)/
+
                     def jiraId = null
 
-                    if ((prTitle =~ pattern).find()) {
-                        jiraId = (prTitle =~ pattern)[0][1]
-                    } else if ((prBody =~ pattern).find()) {
-                        jiraId = (prBody =~ pattern)[0][1]
+                    // ---- TITLE MATCH ----
+                    def m1 = pattern.matcher(prTitle)
+                    if (m1.find()) {
+                        jiraId = m1.group(1)
+                    }
+
+                    // ---- BODY MATCH (fallback) ----
+                    if (!jiraId) {
+                        def m2 = pattern.matcher(prBody)
+                        if (m2.find()) {
+                            jiraId = m2.group(1)
+                        }
                     }
 
                     if (jiraId) {
