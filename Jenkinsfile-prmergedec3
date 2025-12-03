@@ -26,6 +26,9 @@ pipeline {
             }
         }
 
+        /* ----------------------------------------------------------
+         * FETCH PR TITLE + BODY FROM GITHUB (NO readJSON)
+         * ---------------------------------------------------------- */
         stage("Fetch PR Data") {
             when { changeRequest() }
             steps {
@@ -102,11 +105,15 @@ pipeline {
             }
         }
 
+        /* ----------------------------------------------------------
+         * DETECT KB-XXXXX SUBTASK FROM CLEANED PR DATA
+         * ---------------------------------------------------------- */
         stage('Detect Jira Subtask from PR') {
             when { changeRequest() }
             steps {
                 script {
 
+                    // strong clean
                     def clean = { s ->
                         return (s ?: "")
                             .replaceAll("[\\u200B-\\u200D\\uFEFF]", "")
@@ -122,15 +129,23 @@ pipeline {
                     echo "🔎 Clean PR Title: '${prTitle}'"
                     echo "🔎 Clean PR Body : '${prBody}'"
 
+                    // pattern: KB-12345 at beginning
                     def pattern = ~/^(KB-\d+)/
+
                     def jiraId = null
 
+                    // ---- TITLE MATCH ----
                     def m1 = pattern.matcher(prTitle)
-                    if (m1.find()) jiraId = m1.group(1)
+                    if (m1.find()) {
+                        jiraId = m1.group(1)
+                    }
 
+                    // ---- BODY MATCH (fallback) ----
                     if (!jiraId) {
                         def m2 = pattern.matcher(prBody)
-                        if (m2.find()) jiraId = m2.group(1)
+                        if (m2.find()) {
+                            jiraId = m2.group(1)
+                        }
                     }
 
                     if (jiraId) {
@@ -144,11 +159,14 @@ pipeline {
             }
         }
 
+        /* ----------------------------------------------------------
+         * UPDATE JIRA SUBTASK STATUS → DONE (Transition ID 91)
+         * ---------------------------------------------------------- */
         stage('Update Jira Subtask Status') {
             environment {
                 JIRA_URL           = "https://karmayogibharat.atlassian.net"
                 JIRA_ISSUE         = "${env.JIRA_ISSUE_ID}"
-                JIRA_TRANSITION_ID = "91"
+                JIRA_TRANSITION_ID = "91"   // ✔ "Sub-task completed" → Done
             }
             when {
                 expression {
@@ -182,26 +200,20 @@ pipeline {
     } // end stages
 
     post {
+      success {
+        echo "🎯 Pipeline succeeded — triggering service build job..."
 
-        success {
-            echo "🎯 Pipeline succeeded — triggering service build job..."
-
-            build job: 'Build/ServicePipeline',
-                wait: false,
-                parameters: [
-                    string(name: 'github_release_branch', value: env.CHANGE_TARGET),
-                    string(name: 'jira_key', value: env.JIRA_ISSUE_ID ?: ""),
-                    string(name: 'pr_number', value: env.CHANGE_ID)
-                ]
-        }
-
-        failure {
-            echo "❌ Pipeline failed. Check SonarQube/Gerrit/GitHub/Jira logs above."
-        }
-
-        always {
-            echo "🏁 Pipeline Completed"
-        }
+        build job: 'Build/ServicePipeline',
+              wait: false,
+              parameters: [
+                string(name: 'github_release_branch', value: env.CHANGE_TARGET),
+                string(name: 'jira_key', value: env.JIRA_KEY ?: ""),
+                string(name: 'pr_number', value: env.CHANGE_ID)
+              ]
+      } 
+      failure {  
+        echo "❌ Pipeline failed. Check SonarQube/Gerrit/GitHub/Jira logs above."
+      }
     }
+  }
 }
-
