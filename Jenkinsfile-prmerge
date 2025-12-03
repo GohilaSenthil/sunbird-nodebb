@@ -186,7 +186,7 @@ pipeline {
         success {
             echo "🎯 Pipeline succeeded — triggering service build job..."
 
-            build job: 'Build/ServicePipeline',
+            build job: 'Build/Core/Nodebb',
                 wait: false,
                 parameters: [
                     string(name: 'github_release_branch', value: env.CHANGE_TARGET),
