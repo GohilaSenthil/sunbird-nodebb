@@ -197,7 +197,17 @@ pipeline {
 
         failure {
             echo "❌ Pipeline failed. Check SonarQube/Gerrit/GitHub/Jira logs above."
-        }
+            withCredentials([string(credentialsId: 'TEAMS_WEBHOOK_URL', variable: 'TEAMS_URL')]) {
+                sh """
+                    curl -H 'Content-Type: application/json' \
+                         -X POST \
+                         -d '{
+                               "title": "🚨 Jenkins Pipeline Failed",
+                               "text": "**Repository:** ${GITHUB_REPO} \n\n**PR:** #${CHANGE_ID} \n\n**Branch:** ${CHANGE_BRANCH} → ${CHANGE_TARGET} \n\n**Jira Task:** ${env.JIRA_ISSUE_ID ?: "N/A"} \n\nCheck Jenkins for details."
+                             }' \
+                         $TEAMS_URL
+                """
+            }
 
         always {
             echo "🏁 Pipeline Completed"
