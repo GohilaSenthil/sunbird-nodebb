@@ -77,6 +77,33 @@ pipeline {
             }
         }
 
+        stage("Manager Approval Required") {
+            when { changeRequest() }
+            steps {
+                script {
+
+                    // Notify Teams that approval is required
+                    withCredentials([string(credentialsId: 'TEAMS_WEBHOOK_URL', variable: 'TEAMS_URL')]) {
+                        sh """
+                        curl -H 'Content-Type: application/json' \
+                             -X POST \
+                             -d '{
+                                   "title": "🛑 PR Approval Required",
+                                   "text": "**Repository:** ${GITHUB_REPO}\n\n**PR:** #${CHANGE_ID}\n\n**Branch:** ${CHANGE_BRANCH} → ${CHANGE_TARGET}\n\n**Sonar Quality Gate:** PASSED\n\n➡ Please approve in Jenkins to merge."
+                                 }' \
+                             $TEAMS_URL
+                        """
+                    }
+
+                    // Block pipeline until approval
+                    input message: "Approve PR #${CHANGE_ID} for merge?",
+                          ok: "Approve & Merge",
+                          submitter: "project-managers,admins"
+                }
+            }
+        }
+
+
         stage("Merge GitHub PR") {
             when { changeRequest() }
             steps {
