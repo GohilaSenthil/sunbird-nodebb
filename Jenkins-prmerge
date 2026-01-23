@@ -1,0 +1,37 @@
+pipeline {
+  agent any
+
+  stages {
+
+    stage("Detect Merge") {
+      steps {
+        echo "Merged into ${BRANCH_NAME}"
+      }
+    }
+
+    stage("Extract Jira") {
+      steps {
+        script {
+          env.JIRA_ID = sh(
+            script: "git log -1 --pretty=%B | grep -oE 'KB-[0-9]+' || true",
+            returnStdout: true
+          ).trim()
+        }
+      }
+    }
+
+    stage("Update Jira") {
+      when { expression { env.JIRA_ID } }
+      steps {
+        echo "Updating Jira ${env.JIRA_ID}"
+      }
+    }
+
+    stage("Trigger Build") {
+      steps {
+        build job: "Build/${env.JOB_NAME}",
+              wait: false
+      }
+    }
+  }
+}
