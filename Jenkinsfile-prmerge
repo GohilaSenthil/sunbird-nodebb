@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
     environment {
         GITHUB_REPO  = "KB-iGOT/sunbird-nodebb"
         GITHUB_API   = "https://api.github.com/repos/${GITHUB_REPO}"
@@ -11,10 +15,12 @@ pipeline {
 
     stages {
 
-        stage("Detect Pull Request") {
+        stage("PR Context Check") {
             when { changeRequest() }
             steps {
-                echo "🔍 PR Detected: #${CHANGE_ID} → ${CHANGE_BRANCH} → ${CHANGE_TARGET}"
+                echo "PR #${CHANGE_ID}"
+                echo "From: ${CHANGE_BRANCH}"
+                echo "To  : ${CHANGE_TARGET}"
             }
         }
 
@@ -22,223 +28,39 @@ pipeline {
             when { changeRequest() }
             steps {
                 checkout scm
-                sh "git log -1 --pretty=oneline"
             }
         }
 
-        stage("Fetch PR Data") {
-            when { changeRequest() }
-            steps {
-                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
-                    sh """
-                        curl -s \
-                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                          -H "Accept: application/vnd.github.v3+json" \
-                          ${GITHUB_API}/pulls/${CHANGE_ID} > pr_data.json
-                    """
-                }
-
-                script {
-                    def jsonText = readFile('pr_data.json')
-                    def slurper  = new groovy.json.JsonSlurper()
-                    def prJson   = slurper.parseText(jsonText)
-
-                    env.PR_TITLE = (prJson.title ?: "").trim()
-                    env.PR_BODY  = (prJson.body  ?: "").trim()
-
-                    echo "📌 GitHub PR Title: '${env.PR_TITLE}'"
-                    echo "📌 GitHub PR Body : '${env.PR_BODY}'"
-                }
-            }
-        }
-
-        stage("SonarQube Analysis") {
+        stage("Sonar Analysis") {
             when { changeRequest() }
             steps {
                 withSonarQubeEnv("${SONARQUBE_ENV}") {
                     sh """
-                        ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
-                          -Dsonar.projectKey=${GITHUB_REPO.replaceAll('/', '_')} \
-                          -Dsonar.sources=. \
-                          -Dsonar.host.url=http://10.175.2.49:9000/codeanalysis \
-                          -Dsonar.token=${SONAR_AUTH_TOKEN}
+                      ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
+                        -Dsonar.projectKey=${JOB_NAME.replaceAll('/', '_')} \
+                        -Dsonar.sources=.
                     """
                 }
             }
         }
 
-        stage("Enforce Quality Gate") {
+        stage("Quality Gate") {
             when { changeRequest() }
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
+                timeout(time: 10, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
-                echo "✔ Quality Gate Passed"
+                echo "✅ Quality Gate Passed"
             }
         }
-
-        stage("Manager Approval Required") {
-            when { changeRequest() }
-            steps {
-                script {
-
-                    // Notify Teams that approval is required
-                    withCredentials([string(credentialsId: 'TEAMS_WEBHOOK_URL', variable: 'TEAMS_URL')]) {
-                        sh """
-                        curl -H 'Content-Type: application/json' \
-                             -X POST \
-                             -d '{
-                                   "title": "🛑 PR Approval Required",
-                                   "text": "**Repository:** ${GITHUB_REPO}\n\n**PR:** #${CHANGE_ID}\n\n**Branch:** ${CHANGE_BRANCH} → ${CHANGE_TARGET}\n\n**Sonar Quality Gate:** PASSED\n\n➡ Please approve in Jenkins to merge."
-                                 }' \
-                             $TEAMS_URL
-                        """
-                    }
-
-                    // Block pipeline until approval
-                    input message: "Approve PR #${CHANGE_ID} for merge?",
-                          ok: "Approve & Merge",
-                          submitter: "project-managers,admins"
-                }
-            }
-        }
-
-
-        stage("Merge GitHub PR") {
-            when { changeRequest() }
-            steps {
-                withCredentials([string(credentialsId: 'gerrit-github-token', variable: 'GITHUB_TOKEN')]) {
-                    script {
-                        try {
-                            sh """
-                                curl -s -o merge_out.json -w "%{http_code}" \
-                                  -X PUT \
-                                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                                  -H "Accept: application/vnd.github.v3+json" \
-                                  -d '{"merge_method":"squash"}' \
-                                  ${GITHUB_API}/pulls/${CHANGE_ID}/merge
-                            """
-                            env.PR_MERGE_STATUS = "SUCCESS"
-                            echo "🎉 Merged PR #${CHANGE_ID}"
-                        } catch (err) {
-                            env.PR_MERGE_STATUS = "FAILED"
-                            error("❌ PR Merge Failed: ${err}")
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Detect Jira Subtask from PR') {
-            when { changeRequest() }
-            steps {
-                script {
-
-                    def clean = { s ->
-                        return (s ?: "")
-                            .replaceAll("[\\u200B-\\u200D\\uFEFF]", "")
-                            .replaceAll("\\u00A0", " ")
-                            .replaceAll("\\s+", " ")
-                            .replaceAll("^\\s+", "")
-                            .trim()
-                    }
-
-                    def prTitle = clean(env.PR_TITLE)
-                    def prBody  = clean(env.PR_BODY)
-
-                    echo "🔎 Clean PR Title: '${prTitle}'"
-                    echo "🔎 Clean PR Body : '${prBody}'"
-
-                    def pattern = ~/^(KB-\d+)/
-                    def jiraId = null
-
-                    def m1 = pattern.matcher(prTitle)
-                    if (m1.find()) jiraId = m1.group(1)
-
-                    if (!jiraId) {
-                        def m2 = pattern.matcher(prBody)
-                        if (m2.find()) jiraId = m2.group(1)
-                    }
-
-                    if (jiraId) {
-                        env.JIRA_ISSUE_ID = jiraId
-                        echo "🧩 Jira Subtask Detected: ${env.JIRA_ISSUE_ID}"
-                    } else {
-                        env.JIRA_ISSUE_ID = ""
-                        echo "ℹ No Jira Subtask ID found → Skip Jira"
-                    }
-                }
-            }
-        }
-
-        stage('Update Jira Subtask Status') {
-            environment {
-                JIRA_URL           = "https://karmayogibharat.atlassian.net"
-                JIRA_ISSUE         = "${env.JIRA_ISSUE_ID}"
-                JIRA_TRANSITION_ID = "91"
-            }
-            when {
-                expression {
-                    return env.PR_MERGE_STATUS == "SUCCESS" &&
-                           env.JIRA_ISSUE_ID?.trim()
-                }
-            }
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'JIRA_CREDS',
-                    usernameVariable: 'JIRA_USER',
-                    passwordVariable: 'JIRA_TOKEN'
-                )]) {
-                    script {
-                        echo "🔄 Updating Jira ${env.JIRA_ISSUE_ID} → DONE (ID 91)"
-
-                        sh """
-                            curl -v -X POST \
-                                -H "Content-Type: application/json" \
-                                -u $JIRA_USER:$JIRA_TOKEN \
-                                --data '{"transition":{"id":"${JIRA_TRANSITION_ID}"}}' \
-                                ${JIRA_URL}/rest/api/3/issue/${env.JIRA_ISSUE_ID}/transitions
-                        """
-
-                        echo "✔ Jira Updated to DONE"
-                    }
-                }
-            }
-        }
-
-    } // end stages
+    }
 
     post {
-
         success {
-            echo "🎯 Pipeline succeeded — triggering service build job..."
-
-            build job: 'Build/Core/Nodebb',
-                wait: false,
-                parameters: [
-                    string(name: 'github_release_branch', value: env.CHANGE_TARGET),
-                    string(name: 'jira_key', value: env.JIRA_ISSUE_ID ?: ""),
-                    string(name: 'pr_number', value: env.CHANGE_ID)
-                ]
+            echo "✅ PR validation successful. Waiting for manager merge."
         }
-
         failure {
-            echo "❌ Pipeline failed. Check SonarQube/Gerrit/GitHub/Jira logs above."
-            withCredentials([string(credentialsId: 'TEAMS_WEBHOOK_URL', variable: 'TEAMS_URL')]) {
-                sh """
-                    curl -H 'Content-Type: application/json' \
-                         -X POST \
-                         -d '{
-                               "title": "🚨 Jenkins Pipeline Failed",
-                               "text": "**Repository:** ${GITHUB_REPO} \n\n**PR:** #${CHANGE_ID} \n\n**Branch:** ${CHANGE_BRANCH} → ${CHANGE_TARGET} \n\n**Jira Task:** ${env.JIRA_ISSUE_ID ?: "N/A"} \n\nCheck Jenkins for details."
-                             }' \
-                         $TEAMS_URL
-                """
-            }
-        }
-
-        always {
-            echo "🏁 Pipeline Completed"
+            echo "❌ PR validation failed — merge is BLOCKED"
         }
     }
 }
