@@ -21,6 +21,7 @@ pipeline {
                 echo "PR #${CHANGE_ID}"
                 echo "From: ${CHANGE_BRANCH}"
                 echo "To  : ${CHANGE_TARGET}"
+                echo "Fork: ${CHANGE_FORK ?: false}"
             }
         }
 
