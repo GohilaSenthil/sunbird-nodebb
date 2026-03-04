@@ -1,3 +1,9 @@
+@Library('central-pipeline-lib@main') _
+if (env.CHANGE_ID) {
+    prValidationPipeline()
+} else {
+    postMergePipeline()
+}
 node('build-slave') {
     try {
         String ANSI_GREEN = "\u001B[32m"
